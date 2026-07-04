@@ -1,0 +1,15 @@
+{
+  "name": "amex-perk-reminder",
+  "version": "0.1.0",
+  "description": "Track your Amex Platinum benefits and never lose a credit again. Reminds you before hotel credits, dining credits, Saks credits, and airline fee credits expire.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "peerDependencies": {
+    "@vellumai/plugin-api": ">=0.8.0 <1.0.0"
+  },
+  "vellum": {}
+}

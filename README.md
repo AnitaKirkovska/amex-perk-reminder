@@ -22,6 +22,7 @@ No cron surface in the plugin manifest: the skill instructs the assistant to cre
 | Quarter close | Mar/Jun/Sep/Dec 20 | Unused Resy ($100/q) + lululemon ($75/q); Jun/Dec also escalate hotel + annual credits |
 | Hotel escalation | May/Jun/Nov/Dec 15 | The anti-lost-hotel-credit job. Unused $300? May/Nov suggests concrete FHR bookings, Jun/Dec goes critical |
 | Anniversary | Your card month | Oura $200 reset + Uber One renewal |
+| Catalog verify | Jan/Apr/Jul/Oct 2 | Web-checks current Amex terms, flags benefit changes |
 
 Reminders only. It never books, buys, enrolls, or messages anyone but you.
 

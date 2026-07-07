@@ -48,6 +48,15 @@ assistant scheduler create \
   --action "Amex Perk Reminder: run get-benefit-status. New cardmember year: Oura Ring $200 credit reset (one-time per year) and Uber One $120 renewal will auto-charge. Skip muted benefits, send nothing if both are muted."
 ```
 
+And one catalog-freshness job so this plugin never serves stale benefit data:
+
+```
+assistant scheduler create \
+  --name "Amex catalog verify" \
+  --schedule "0 10 2 1,4,7,10 *" \
+  --action "Amex Perk Reminder maintenance: web-search the current US Amex Platinum statement credits (amounts, cadences, reset windows, new or discontinued credits). Compare against the benefit reference table in the amex-perk-reminder SKILL.md. If Amex changed anything (like the Saks credit ending Jul 1, 2026 or its promised replacement retail offers arriving), tell the user exactly what changed and how it affects their reminders. If nothing changed, send nothing."
+```
+
 ## Reminder delivery rules
 
 - Channel priority: Slack DM > Telegram > email (send from the user's connected Gmail to themselves, subject like "Amex: $300 hotel credit expires in 16 days") > in-app.

@@ -52,7 +52,7 @@ const logBenefitUse: ToolDefinition = {
       },
       note: {
         type: "string",
-        description: "Optional context, e.g. 'Nobis Stockholm via Amex Travel'.",
+        description: "Optional context, e.g. 'FHR booking via Amex Travel'.",
       },
     },
     required: ["benefit", "amount"],

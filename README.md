@@ -1,6 +1,18 @@
-# Amex Perk Reminder 🏦
+<div align="center">
 
-Never lose a $300 hotel credit again because you forgot to book by July 1.
+<img src="hero.png" width="200" alt="Amex Perk Reminder">
+
+# amex-perk-reminder
+
+**never lose a $300 hotel credit again because you forgot to book by July 1**
+
+![version](https://img.shields.io/badge/version-0.3.0-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![made for](https://img.shields.io/badge/made%20for-Vellum-8A2BE2)
+
+[Cards Supported](#cards-supported) • [How It Works](#how-it-works) • [Scheduled Jobs](#what-runs-automatically) • [Tools](#tools) • [Usage](#example-prompts)
+
+</div>
+
+---
 
 Amex cards bury their annual fees under a pile of statement credits with expiring windows: monthly, quarterly, semiannual, calendar-year, cardmember-year. Miss a window and that money is gone. This plugin does the remembering across **every Amex card you hold**, and only speaks up when a credit is actually at risk.
 

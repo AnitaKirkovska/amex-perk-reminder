@@ -2,51 +2,62 @@
 
 Never lose a $300 hotel credit again because you forgot to book by July 1.
 
-The Amex Platinum ($895/yr) has ~$1,500 in easy credits — hotel, dining, Uber, airline fees, Saks, entertainment. The catch is you have to *remember* to use them within specific windows, or they disappear. This plugin does the remembering.
+The 2026 Amex Platinum ($895/yr) carries **$3,084 in annual statement credits across 12 different windows**: monthly, quarterly, semiannual, calendar-year, and cardmember-year. Miss a window and that money is gone. This plugin does the remembering, and only speaks up when a credit is actually at risk.
 
 ## How it works
 
 1. Install the plugin
-2. The assistant reads the skill and creates recurring reminder jobs
-3. You get notifications before credits expire — hotel credits 1 month out, Saks mid-cycle, Uber/Resy monthly, airline quarterly
+2. The assistant runs a 3-question setup (anniversary month, airline, credits to mute) and creates recurring reminder jobs
+3. Reminders arrive on your best connected channel: **Slack > Telegram > email > in-app**
+4. Reminders are **status-aware**: the assistant checks what you've used first. Used your hotel credit? Silence. Unused with 2 weeks left? Escalating nag with exact dollars and the deadline.
 
-No cron surface in the plugin manifest (the harness only knows hooks/skills/tools). The workaround: the skill's setup instructions tell the assistant to create scheduler jobs natively. Same result, automatic on install.
+No cron surface in the plugin manifest: the skill instructs the assistant to create jobs with its built-in scheduler on install.
+
+## What runs automatically
+
+| Job | When | What it does |
+|---|---|---|
+| Month open | 1st, 9am | Fresh monthly credits ($25 streaming, $15 Uber Cash), plus quarterly/hotel/airline resets when applicable |
+| Monthly sweep | 24th, 9am | Nags on unused monthly credits, silent if used |
+| Quarter close | Mar/Jun/Sep/Dec 20 | Unused Resy ($100/q) + lululemon ($75/q); Jun/Dec also escalate hotel + annual credits |
+| Hotel escalation | May/Jun/Nov/Dec 15 | The anti-lost-hotel-credit job. Unused $300? May/Nov suggests concrete FHR bookings, Jun/Dec goes critical |
+| Anniversary | Your card month | Oura $200 reset + Uber One renewal |
+
+Reminders only. It never books, buys, enrolls, or messages anyone but you.
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `get-benefit-status` | Full 2026 credit overview: used / remaining / days left per window, urgency-ranked alerts |
+| `log-benefit-use` | Records usage ("I spent $60 at a Resy spot") so reminders stop nagging |
+| `update-benefit-settings` | Anniversary month, selected airline, mute credits you don't use |
+
+## 2026 credits tracked
+
+Hotel $600 (2x $300 semiannual, FHR/THC via Amex Travel) · Resy $400 ($100/q) · Digital Entertainment $300 ($25/mo) · Equinox $300 · lululemon $300 ($75/q) · CLEAR Plus ~$209 · Uber Cash $200 ($15/mo, $20 Dec) · Oura $200 · Airline Fee $200 · Walmart+ ~$155 · Uber One $120 · ~~Saks $100~~ (ended Jul 1, 2026)
 
 ## Structure
 
 ```
 amex-perk-reminder/
-├── package.json         # Plugin manifest
+├── package.json
 ├── README.md
 ├── skills/
 │   └── amex-perk-reminder/
-│       └── SKILL.md     # Full benefit calendar + setup instructions
+│       └── SKILL.md               # Setup interview, scheduler jobs, delivery rules, benefit reference
 └── tools/
-    └── get-benefit-status.ts  # On-demand perk check + expiry warnings
+    ├── get-benefit-status.ts      # Status + urgency-ranked alerts
+    ├── log-benefit-use.ts         # Persist credit usage per window
+    └── update-benefit-settings.ts # Anniversary, airline, mutes
 ```
 
-## Benefits tracked
+## Example prompts
 
-| Perk | Value | Frequency | Reminder cadence |
-|------|-------|-----------|------------------|
-| Hotel Credit (FHR/THC) | $600/yr | Semi-annual | Dec 1, Jun 1 — 1 month before reset |
-| Resy Dining | $400/yr | Monthly | 1st of every month |
-| Uber Cash | $200/yr | Monthly | 1st of every month |
-| Airline Fee Credit | $200/yr | Annual | Quarterly check-in |
-| Digital Entertainment | $240/yr | Monthly | 15th of every month |
-| Saks Fifth Avenue | $100/yr | Semi-annual | Mid-cycle + end-of-window |
-| CLEAR Plus, TSA PreCheck, Walmart+ | Various | Annual/once | On relevant schedule |
+- "set up my amex tracking"
+- "amex status"
+- "what perks are about to expire?"
+- "I booked the hotel through Amex Travel, $300"
+- "I don't care about Equinox or lululemon"
 
-## Why this exists
-
-Anita lost her $300 H1 hotel credit because she didn't book a hotel by July 1. Told me about it, and I said let's build a plugin so it doesn't happen again.
-
-## Future
-
-- Parse Amex email statements to auto-detect triggered credits
-- FHR booking alert when a hotel qualifies
-- Multi-card (Gold/Green) support
-
----
-
-*Not affiliated with American Express. Verify your benefit details on your Amex account.*
+MIT licensed.

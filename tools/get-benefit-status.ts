@@ -1,140 +1,171 @@
-import { Tool, ToolContext, ToolResponse } from "@vellumai/plugin-api";
+import type { ToolDefinition } from "@vellumai/plugin-api";
 
-interface BenefitState {
-  hotel_h1_used: number;      // Jan-Jun hotel credit used ($300 max)
-  hotel_h2_used: number;      // Jul-Dec hotel credit used
-  saks_h1_used: number;       // Jan-Jun Saks used ($50 max)
-  saks_h2_used: number;       // Jul-Dec Saks used
-  airline_fees_used: number;  // YTD airline fee credits used ($200 max)
-  uber_cash_used: number;     // Current month Uber cash used
-  resy_dining_used: number;   // Current month Resy dining used
-  last_updated: string;       // ISO date
+// 2026 US Amex Platinum benefit catalog (post-2025 refresh, $895 AF).
+// Verified May 2026 against Amex official terms via CardStack / Roaming Cactus.
+interface Benefit {
+  id: string;
+  label: string;
+  amount: number; // per window
+  cadence: "monthly" | "quarterly" | "semiannual" | "calendar_year" | "anniversary_year";
+  auto?: boolean; // credit applies automatically when the merchant charges the card
+  note: string;
+  decemberAmount?: number; // Uber Cash bumps in December
+  endedOn?: string; // ISO date the benefit was discontinued
 }
 
-const tool: Tool = {
-  name: "get-benefit-status",
-  description: "Returns current Amex Platinum benefit usage and shows what's about to expire",
-  parameters: {
+const CATALOG: Benefit[] = [
+  { id: "hotel", label: "Hotel Credit (FHR / THC)", amount: 300, cadence: "semiannual",
+    note: "Prepaid Fine Hotels + Resorts or The Hotel Collection (2+ nights) via Amex Travel. $600/yr total. The big one: book early in the half, availability thins out near the deadline." },
+  { id: "resy", label: "Resy Dining Credit", amount: 100, cadence: "quarterly",
+    note: "Any U.S. Resy-affiliated restaurant, pay with the Platinum. No app booking needed. Cannot bank unused credit across quarters." },
+  { id: "lululemon", label: "lululemon Credit", amount: 75, cadence: "quarterly",
+    note: "U.S. lululemon stores (not outlets) or lululemon.com. Enrollment required." },
+  { id: "digital_entertainment", label: "Digital Entertainment", amount: 25, cadence: "monthly",
+    note: "Disney+, Hulu, YouTube TV/Premium, Peacock, Paramount+, ESPN+, NYT, WSJ. Enrollment required, then automatic." },
+  { id: "uber_cash", label: "Uber Cash", amount: 15, decemberAmount: 20, cadence: "monthly",
+    note: "Rides or Uber Eats. $20 in December. Link the card in the Uber app." },
+  { id: "airline_fee", label: "Airline Fee Credit", amount: 200, cadence: "calendar_year",
+    note: "Incidentals (bags, seats, in-flight, lounge passes) on ONE selected airline. Pick the airline in January: it locks for the year." },
+  { id: "equinox", label: "Equinox Credit", amount: 300, cadence: "calendar_year",
+    note: "Equinox club or Equinox+ digital, enrollment required. Worth $0 if you don't already pay for Equinox: mute it if so." },
+  { id: "clear", label: "CLEAR Plus", amount: 209, cadence: "calendar_year", auto: true,
+    note: "Covers CLEAR Plus membership, applies automatically as CLEAR charges the card monthly. Verify it's billing the Platinum." },
+  { id: "walmart_plus", label: "Walmart+", amount: 155, cadence: "calendar_year", auto: true,
+    note: "Covers monthly Walmart+ membership (includes Paramount+ or Peacock). Automatic once membership bills the Platinum." },
+  { id: "uber_one", label: "Uber One", amount: 120, cadence: "anniversary_year", auto: true,
+    note: "Covers the Uber One membership fee (separate from monthly Uber Cash). Auto-renews on the card." },
+  { id: "oura", label: "Oura Ring Credit", amount: 200, cadence: "anniversary_year",
+    note: "One-time credit per cardmember year toward an Oura Ring or subscription." },
+  { id: "saks", label: "Saks Fifth Avenue", amount: 50, cadence: "semiannual", endedOn: "2026-07-01",
+    note: "DISCONTINUED July 1, 2026. Amex has said replacement retail offers are coming: watch announcements." },
+];
+
+interface State {
+  settings?: { anniversaryMonth?: number; airline?: string; muted?: string[] };
+  usage?: Record<string, number>; // e.g. "resy:2026Q3": 100
+  lastUpdated?: string;
+}
+
+function windowKey(b: Benefit, now: Date, annivMonth?: number): string {
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  switch (b.cadence) {
+    case "monthly": return `${b.id}:${y}-${String(m).padStart(2, "0")}`;
+    case "quarterly": return `${b.id}:${y}Q${Math.ceil(m / 3)}`;
+    case "semiannual": return `${b.id}:${y}H${m <= 6 ? 1 : 2}`;
+    case "calendar_year": return `${b.id}:${y}`;
+    case "anniversary_year": {
+      const am = annivMonth ?? 1;
+      const startYear = m >= am ? y : y - 1;
+      return `${b.id}:${startYear}A`;
+    }
+  }
+}
+
+function windowEnd(b: Benefit, now: Date, annivMonth?: number): Date {
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  switch (b.cadence) {
+    case "monthly": return new Date(y, m, 0, 23, 59, 59);
+    case "quarterly": return new Date(y, Math.ceil(m / 3) * 3, 0, 23, 59, 59);
+    case "semiannual": return new Date(y, m <= 6 ? 6 : 12, 0, 23, 59, 59);
+    case "calendar_year": return new Date(y, 12, 0, 23, 59, 59);
+    case "anniversary_year": {
+      const am = annivMonth ?? 1;
+      const startYear = m >= am ? y : y - 1;
+      return new Date(startYear + 1, am - 1, 0, 23, 59, 59);
+    }
+  }
+}
+
+const getBenefitStatus: ToolDefinition = {
+  description:
+    "Returns current Amex Platinum benefit usage: every 2026 credit, its window, what's used, what's remaining, days left, and urgency-ranked alerts for anything about to expire unused. Call this before sending any perk reminder: if nothing is actionable, stay silent.",
+  input_schema: {
     type: "object",
     properties: {
-      month: {
-        type: "number",
-        description: "Current month (1-12), for determining semi-annual windows",
-      },
-      day: {
-        type: "number",
-        description: "Current day of month",
-      },
       benefit: {
         type: "string",
-        enum: ["all", "hotel", "saks", "uber", "resy", "airline", "entertainment"],
-        description: "Which benefit to check, or 'all' for full overview",
+        description: "Optional benefit id to check (e.g. 'hotel', 'resy'). Omit for the full overview.",
       },
     },
-    required: ["month", "day"],
   },
+  defaultRiskLevel: "low",
+  execute: async (input: { benefit?: string }, ctx) => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const workspaceDir =
+      process.env.VELLUM_WORKSPACE_DIR ?? (ctx as { workingDir?: string }).workingDir ?? process.cwd();
+    const storageDir =
+      (ctx as { pluginStorageDir?: string }).pluginStorageDir ??
+      path.join(workspaceDir, "plugins", "amex-perk-reminder", "data");
+    await fs.mkdir(storageDir, { recursive: true });
+    const statePath = path.join(storageDir, "benefit-state.json");
 
-  async execute(
-    context: ToolContext,
-    params: { month: number; day: number; benefit?: string },
-  ): Promise<ToolResponse> {
-    const month = params.month;
-    const day = params.day;
-    const benefit = params.benefit || "all";
-
-    // Read stored state from plugin data directory
-    let state: BenefitState = {
-      hotel_h1_used: 0,
-      hotel_h2_used: 0,
-      saks_h1_used: 0,
-      saks_h2_used: 0,
-      airline_fees_used: 0,
-      uber_cash_used: 0,
-      resy_dining_used: 0,
-      last_updated: new Date().toISOString(),
-    };
-
+    let state: State = {};
     try {
-      const data = await context.fs.readFile("benefit-state.json");
-      state = JSON.parse(data.toString());
+      state = JSON.parse(await fs.readFile(statePath, "utf8"));
     } catch {
-      // No state file yet — first run
+      // first run
+    }
+    const muted = new Set(state.settings?.muted ?? []);
+    const annivMonth = state.settings?.anniversaryMonth;
+    const now = new Date();
+    const dec = now.getMonth() === 11;
+
+    const benefits = CATALOG.filter((b) => !input.benefit || b.id === input.benefit);
+    const rows: Record<string, unknown>[] = [];
+    const alerts: { urgency: string; message: string }[] = [];
+
+    for (const b of benefits) {
+      if (b.endedOn && now >= new Date(b.endedOn)) {
+        rows.push({ id: b.id, label: b.label, status: "discontinued", note: b.note });
+        continue;
+      }
+      const amount = dec && b.decemberAmount ? b.decemberAmount : b.amount;
+      const key = windowKey(b, now, annivMonth);
+      const used = state.usage?.[key] ?? 0;
+      const remaining = Math.max(0, amount - used);
+      const end = windowEnd(b, now, annivMonth);
+      const daysLeft = Math.ceil((end.getTime() - now.getTime()) / 86400000);
+      const isMuted = muted.has(b.id);
+      const needsAnniv = b.cadence === "anniversary_year" && !annivMonth;
+
+      rows.push({
+        id: b.id, label: b.label, cadence: b.cadence,
+        windowAmount: amount, used, remaining, daysLeftInWindow: daysLeft,
+        muted: isMuted, auto: b.auto ?? false, note: b.note,
+        ...(needsAnniv ? { warning: "anniversaryMonth not set: window dates are assumed Jan; set it via update-benefit-settings" } : {}),
+      });
+
+      if (isMuted || b.auto || remaining <= 0) continue;
+      const urgency =
+        daysLeft <= 7 ? "critical" : daysLeft <= 14 ? "closing" : daysLeft <= 31 && b.cadence !== "monthly" ? "heads_up" : null;
+      if (urgency) {
+        alerts.push({ urgency, message: `${b.label}: $${remaining} unused, ${daysLeft} days left in the ${b.cadence.replace("_", " ")} window.` });
+      }
     }
 
-    const is_h2 = month >= 7;
-    const days_until_jul = month <= 6
-      ? new Date(2026, 6, 1).getTime() - new Date(2026, month - 1, day).getTime()
-      : 0;
-    const days_until_jan = month > 6
-      ? new Date(2027, 0, 1).getTime() - new Date(2026, month - 1, day).getTime()
-      : 0;
-    const days_until_month_end = new Date(2026, month, 0).getDate() - day;
-
-    const alerts: string[] = [];
-    const overview: Record<string, string> = {};
-
-    // Hotel credit
-    const hotel_used = is_h2 ? state.hotel_h2_used : state.hotel_h1_used;
-    const hotel_remaining = 300 - hotel_used;
-    overview.hotel = `$${hotel_used}/$300 used ($${hotel_remaining} remaining)`;
-    if (!is_h2 && days_until_jul > 0 && days_until_jul <= 45) {
-      alerts.push(`⚠️ ${Math.ceil(days_until_jul / 7)} weeks left on your $300 hotel credit. Book via Amex Travel.`);
-    } else if (is_h2 && days_until_jan > 0 && days_until_jan <= 45) {
-      alerts.push(`⚠️ ${Math.ceil(days_until_jan / 7)} weeks left on your $300 hotel credit. Book via Amex Travel.`);
+    if (state.settings && !state.settings.airline) {
+      alerts.push({ urgency: "heads_up", message: "No airline selected for the $200 Airline Fee Credit. It must be chosen on the Amex site and locks for the calendar year." });
     }
 
-    // Saks
-    const saks_used = is_h2 ? state.saks_h2_used : state.saks_h1_used;
-    const saks_remaining = 50 - saks_used;
-    overview.saks = `$${saks_used}/$50 used ($${saks_remaining} remaining)`;
-    if (month === 6 || month === 12) {
-      alerts.push(`⚠️ Saks $50 credit expires this month. Use it or lose it.`);
-    }
-
-    // Uber Cash
-    const uber_amt = month === 12 ? 35 : 15;
-    overview.uber_cash = `$${state.uber_cash_used}/$${uber_amt} used this month`;
-    if (state.uber_cash_used < uber_amt) {
-      alerts.push(`💰 $${uber_amt - state.uber_cash_used} Uber Cash available this month.`);
-    }
-
-    // Resy
-    overview.resy = `$${state.resy_dining_used}/$33 used this month`;
-    if (state.resy_dining_used < 33) {
-      alerts.push(`🍽️ $${33 - state.resy_dining_used} Resy dining credit available this month.`);
-    }
-
-    // Airline
-    overview.airline = `$${state.airline_fees_used}/$200 used this year`;
-    if (state.airline_fees_used < 200 && (month === 9 || month === 12)) {
-      alerts.push(`✈️ $${200 - state.airline_fees_used} airline fee credit remaining. Bag fees, seat assignments, lounge passes count.`);
-    }
-
-    // Entertainment
-    overview.entertainment = `$${Math.min(state.uber_cash_used, 20)}/$20 estimated this month`;
-    alerts.push(`📺 Digital entertainment credit: Peacock, WSJ, NYT, Disney streaming. Check your Amex offers page.`);
-
-    if (benefit !== "all") {
-      const filtered: Record<string, string> = {};
-      if (overview[benefit]) filtered[benefit] = overview[benefit];
-      return {
-        content: `## ${benefit.charAt(0).toUpperCase() + benefit.slice(1)} Credit\n${filtered[benefit] || "No data for this benefit"}`,
-      };
-    }
+    const order = { critical: 0, closing: 1, heads_up: 2 } as Record<string, number>;
+    alerts.sort((a, z) => order[a.urgency] - order[z.urgency]);
 
     return {
-      content: [
-        `## Amex Platinum Perk Status (${month}/${day})`,
-        "",
-        ...Object.entries(overview).map(([k, v]) => `• **${k.replace(/_/g, " ")}**: ${v}`),
-        "",
-        ...(alerts.length > 0 ? ["### Alerts", ...alerts, ""] : []),
-        alerts.length === 0 ? "✅ All perks tracked. No urgent expirations." : "",
-        "",
-        "Ask me to log a credit when you use it.",
-      ].join("\n"),
+      content: JSON.stringify({
+        asOf: now.toISOString(),
+        annualFee: 895,
+        settings: state.settings ?? {},
+        benefits: rows,
+        alerts,
+        guidance: alerts.length === 0
+          ? "Nothing urgent. If this was a scheduled check, do not message the user."
+          : "Deliver alerts via the user's best connected channel (Slack > Telegram > email). Lead with critical items and exact dollar amounts.",
+      }, null, 2),
     };
   },
 };
 
-export default tool;
+export default getBenefitStatus;

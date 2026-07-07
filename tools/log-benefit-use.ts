@@ -1,35 +1,8 @@
 import type { ToolDefinition } from "@vellumai/plugin-api";
-
-const BENEFIT_IDS = [
-  "hotel", "resy", "lululemon", "digital_entertainment", "uber_cash",
-  "airline_fee", "equinox", "clear", "walmart_plus", "uber_one", "oura", "saks",
-] as const;
-
-type Cadence = "monthly" | "quarterly" | "semiannual" | "calendar_year" | "anniversary_year";
-const CADENCE: Record<string, Cadence> = {
-  hotel: "semiannual", resy: "quarterly", lululemon: "quarterly",
-  digital_entertainment: "monthly", uber_cash: "monthly",
-  airline_fee: "calendar_year", equinox: "calendar_year", clear: "calendar_year",
-  walmart_plus: "calendar_year", uber_one: "anniversary_year", oura: "anniversary_year",
-  saks: "semiannual",
-};
-
-function windowKey(id: string, now: Date, annivMonth?: number): string {
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1;
-  switch (CADENCE[id]) {
-    case "monthly": return `${id}:${y}-${String(m).padStart(2, "0")}`;
-    case "quarterly": return `${id}:${y}Q${Math.ceil(m / 3)}`;
-    case "semiannual": return `${id}:${y}H${m <= 6 ? 1 : 2}`;
-    case "calendar_year": return `${id}:${y}`;
-    case "anniversary_year": {
-      const am = annivMonth ?? 1;
-      return `${id}:${m >= am ? y : y - 1}A`;
-    }
-  }
-}
+import { CARDS, CARD_IDS, loadState, saveState, windowKey } from "../lib/catalog.ts";
 
 interface LogInput {
+  card?: string;
   benefit: string;
   amount: number;
   note?: string;
@@ -37,18 +10,21 @@ interface LogInput {
 
 const logBenefitUse: ToolDefinition = {
   description:
-    "Record usage of an Amex Platinum credit so reminders stop nagging about it. Call this whenever the user says they used a benefit (booked the FHR hotel, ate at a Resy spot, streaming charge posted, paid a bag fee, etc.). Amount is dollars used in the current window; it accumulates.",
+    "Record usage of an Amex credit so reminders stop nagging about it. Call whenever the user says they used a benefit (booked the FHR hotel, ate at a Resy spot, used the companion certificate, streaming charge posted). Amount is dollars used in the current window (1 for companion certificates); it accumulates. Card id is only needed when the benefit exists on more than one of the user's cards.",
   input_schema: {
     type: "object",
     properties: {
+      card: {
+        type: "string",
+        description: `Card the benefit belongs to. One of: ${CARD_IDS.join(", ")}. Optional when unambiguous.`,
+      },
       benefit: {
         type: "string",
-        enum: [...BENEFIT_IDS],
-        description: "Which benefit was used.",
+        description: "Benefit id, e.g. 'hotel', 'resy', 'uber_cash', 'delta_stays', 'companion_cert'.",
       },
       amount: {
         type: "number",
-        description: "Dollar amount used (adds to the current window's total).",
+        description: "Dollar amount used (adds to the current window's total). Use 1 for a companion certificate.",
       },
       note: {
         type: "string",
@@ -59,45 +35,53 @@ const logBenefitUse: ToolDefinition = {
   },
   defaultRiskLevel: "low",
   execute: async (input: LogInput, ctx) => {
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const workspaceDir =
-      process.env.VELLUM_WORKSPACE_DIR ?? (ctx as { workingDir?: string }).workingDir ?? process.cwd();
-    const storageDir =
-      (ctx as { pluginStorageDir?: string }).pluginStorageDir ??
-      path.join(workspaceDir, "plugins", "amex-perk-reminder", "data");
-    await fs.mkdir(storageDir, { recursive: true });
-    const statePath = path.join(storageDir, "benefit-state.json");
-
-    if (!BENEFIT_IDS.includes(input.benefit as (typeof BENEFIT_IDS)[number])) {
-      return { content: JSON.stringify({ error: `Unknown benefit '${input.benefit}'. Valid: ${BENEFIT_IDS.join(", ")}` }) };
+    const { state, statePath } = await loadState(ctx);
+    const held = state.settings?.cards ?? [];
+    if (held.length === 0) {
+      return { content: JSON.stringify({ error: "No cards configured. Run setup with update-benefit-settings first." }) };
     }
+
     const amount = Number(input.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
-      return { content: JSON.stringify({ error: "amount must be a positive number of dollars" }) };
+      return { content: JSON.stringify({ error: "amount must be a positive number" }) };
     }
 
-    let state: { settings?: { anniversaryMonth?: number }; usage?: Record<string, number>; log?: unknown[]; lastUpdated?: string } = {};
-    try {
-      state = JSON.parse(await fs.readFile(statePath, "utf8"));
-    } catch {
-      // first run
+    // Resolve which held card this benefit belongs to.
+    const candidates = held.filter((hc) => {
+      if (input.card && hc.card !== input.card) return false;
+      const def = CARDS.find((c) => c.id === hc.card);
+      return def?.benefits.some((b) => b.id === input.benefit) ?? false;
+    });
+    if (candidates.length === 0) {
+      const valid = held.flatMap((hc) => {
+        const def = CARDS.find((c) => c.id === hc.card);
+        return def ? def.benefits.map((b) => `${def.id}.${b.id}`) : [];
+      });
+      return { content: JSON.stringify({ error: `Benefit '${input.benefit}'${input.card ? ` on card '${input.card}'` : ""} not found on the user's cards. Valid: ${valid.join(", ")}` }) };
+    }
+    if (candidates.length > 1) {
+      return { content: JSON.stringify({ error: `Benefit '${input.benefit}' exists on multiple held cards (${candidates.map((c) => c.card).join(", ")}). Pass the card id.` }) };
     }
 
-    const key = windowKey(input.benefit, new Date(), state.settings?.anniversaryMonth);
+    const hc = candidates[0];
+    const def = CARDS.find((c) => c.id === hc.card)!;
+    const b = def.benefits.find((x) => x.id === input.benefit)!;
+    const key = windowKey(def.id, b, new Date(), hc.anniversaryMonth);
+
     state.usage = state.usage ?? {};
     state.usage[key] = (state.usage[key] ?? 0) + amount;
     state.log = state.log ?? [];
-    state.log.push({ at: new Date().toISOString(), benefit: input.benefit, amount, note: input.note ?? null });
-    state.lastUpdated = new Date().toISOString();
+    state.log.push({ at: new Date().toISOString(), card: def.id, benefit: b.id, amount, note: input.note ?? null });
+    await saveState(statePath, state);
 
-    await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
     return {
       content: JSON.stringify({
         ok: true,
-        benefit: input.benefit,
+        card: def.id,
+        benefit: b.id,
         window: key,
         totalUsedThisWindow: state.usage[key],
+        windowAmount: b.amount,
       }),
     };
   },

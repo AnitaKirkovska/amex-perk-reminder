@@ -1,7 +1,7 @@
 {
   "name": "amex-perk-reminder",
-  "version": "0.2.0",
-  "description": "Track all 12 Amex Platinum credits ($3,084/yr) and get status-aware reminders on Slack, Telegram, or email before any window closes. 2026 benefit calendar built in.",
+  "version": "0.3.0",
+  "description": "Track every credit on the Amex cards you hold (Platinum, Gold, Business Platinum, Delta Gold/Platinum/Reserve) and get status-aware reminders on Slack, Telegram, or email before any window closes. 2026 benefit calendars built in.",
   "private": true,
   "license": "MIT",
   "type": "module",

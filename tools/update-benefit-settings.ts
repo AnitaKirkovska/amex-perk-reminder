@@ -1,84 +1,95 @@
 import type { ToolDefinition } from "@vellumai/plugin-api";
-
-const MUTABLE = [
-  "hotel", "resy", "lululemon", "digital_entertainment", "uber_cash",
-  "airline_fee", "equinox", "clear", "walmart_plus", "uber_one", "oura",
-];
+import { CARDS, CARD_IDS, loadState, saveState, type CardSetting } from "../lib/catalog.ts";
 
 interface SettingsInput {
-  anniversaryMonth?: number;
-  airline?: string;
+  addCards?: { card: string; anniversaryMonth?: number; airline?: string }[];
+  removeCards?: string[];
   mute?: string[];
   unmute?: string[];
 }
 
 const updateBenefitSettings: ToolDefinition = {
   description:
-    "Update Amex Platinum tracking settings: cardmember anniversary month (drives Oura + Uber One windows), selected airline for the fee credit, and muting benefits the user doesn't care about (muted benefits never trigger reminders). Call during setup and whenever the user says things like 'I don't use Equinox' or 'my airline is Delta'.",
+    `Configure Amex benefit tracking. Add or remove the cards the user holds (${CARD_IDS.join(", ")}), set per-card anniversary month (drives cardmember-year windows like Oura, Uber One, companion certificates) and selected airline (fee credit), and mute benefits the user doesn't care about (mute keys are 'card.benefit', e.g. 'platinum.equinox'). Call during setup and whenever the user mentions a new card, their anniversary, their airline, or a credit they never use.`,
   input_schema: {
     type: "object",
     properties: {
-      anniversaryMonth: {
-        type: "number",
-        description: "Cardmember anniversary month, 1-12.",
+      addCards: {
+        type: "array",
+        description: "Cards to add or update (merged by card id).",
+        items: {
+          type: "object",
+          properties: {
+            card: { type: "string", description: `One of: ${CARD_IDS.join(", ")}` },
+            anniversaryMonth: { type: "number", description: "Cardmember anniversary month, 1-12." },
+            airline: { type: "string", description: "Airline selected for this card's fee credit (if the card has one)." },
+          },
+          required: ["card"],
+        },
       },
-      airline: {
-        type: "string",
-        description: "Airline selected for the $200 fee credit this calendar year.",
+      removeCards: {
+        type: "array",
+        items: { type: "string" },
+        description: "Card ids to stop tracking.",
       },
       mute: {
         type: "array",
         items: { type: "string" },
-        description: `Benefit ids to stop reminding about. Valid: ${MUTABLE.join(", ")}`,
+        description: "Benefit keys to stop reminding about, format 'card.benefit' (e.g. 'platinum.lululemon').",
       },
       unmute: {
         type: "array",
         items: { type: "string" },
-        description: "Benefit ids to resume reminding about.",
+        description: "Benefit keys to resume reminding about.",
       },
     },
   },
   defaultRiskLevel: "low",
   execute: async (input: SettingsInput, ctx) => {
-    const fs = await import("node:fs/promises");
-    const path = await import("node:path");
-    const workspaceDir =
-      process.env.VELLUM_WORKSPACE_DIR ?? (ctx as { workingDir?: string }).workingDir ?? process.cwd();
-    const storageDir =
-      (ctx as { pluginStorageDir?: string }).pluginStorageDir ??
-      path.join(workspaceDir, "plugins", "amex-perk-reminder", "data");
-    await fs.mkdir(storageDir, { recursive: true });
-    const statePath = path.join(storageDir, "benefit-state.json");
-
-    let state: { settings?: { anniversaryMonth?: number; airline?: string; muted?: string[] }; lastUpdated?: string } = {};
-    try {
-      state = JSON.parse(await fs.readFile(statePath, "utf8"));
-    } catch {
-      // first run
-    }
+    const { state, statePath } = await loadState(ctx);
     state.settings = state.settings ?? {};
+    const cards: CardSetting[] = state.settings.cards ?? [];
 
-    if (input.anniversaryMonth !== undefined) {
-      const m = Number(input.anniversaryMonth);
-      if (!Number.isInteger(m) || m < 1 || m > 12) {
-        return { content: JSON.stringify({ error: "anniversaryMonth must be an integer 1-12" }) };
+    for (const add of input.addCards ?? []) {
+      if (!CARD_IDS.includes(add.card)) {
+        return { content: JSON.stringify({ error: `Unknown card '${add.card}'. Valid: ${CARD_IDS.join(", ")}` }) };
       }
-      state.settings.anniversaryMonth = m;
+      if (add.anniversaryMonth !== undefined) {
+        const m = Number(add.anniversaryMonth);
+        if (!Number.isInteger(m) || m < 1 || m > 12) {
+          return { content: JSON.stringify({ error: "anniversaryMonth must be an integer 1-12" }) };
+        }
+      }
+      const existing = cards.find((c) => c.card === add.card);
+      if (existing) {
+        if (add.anniversaryMonth !== undefined) existing.anniversaryMonth = add.anniversaryMonth;
+        if (add.airline !== undefined) existing.airline = String(add.airline).slice(0, 80);
+      } else {
+        const entry: CardSetting = { card: add.card };
+        if (add.anniversaryMonth !== undefined) entry.anniversaryMonth = add.anniversaryMonth;
+        if (add.airline !== undefined) entry.airline = String(add.airline).slice(0, 80);
+        cards.push(entry);
+      }
     }
-    if (input.airline !== undefined) {
-      state.settings.airline = String(input.airline).slice(0, 80);
-    }
+
+    const removals = new Set(input.removeCards ?? []);
+    state.settings.cards = cards.filter((c) => !removals.has(c.card));
+
+    const validMutes = new Set(
+      CARDS.flatMap((c) => c.benefits.map((b) => `${c.id}.${b.id}`)),
+    );
     const muted = new Set(state.settings.muted ?? []);
-    for (const id of input.mute ?? []) {
-      if (MUTABLE.includes(id)) muted.add(id);
+    for (const key of input.mute ?? []) {
+      if (validMutes.has(key)) muted.add(key);
     }
-    for (const id of input.unmute ?? []) {
-      muted.delete(id);
+    for (const key of input.unmute ?? []) {
+      muted.delete(key);
     }
     state.settings.muted = [...muted];
-    state.lastUpdated = new Date().toISOString();
+    delete state.settings.anniversaryMonth;
+    delete state.settings.airline;
 
-    await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+    await saveState(statePath, state);
     return { content: JSON.stringify({ ok: true, settings: state.settings }) };
   },
 };
